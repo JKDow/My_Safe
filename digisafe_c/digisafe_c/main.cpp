@@ -28,6 +28,13 @@ EEPROM memory:
 	* Byte 3 is lower byte of pointer to next element
 */
 
+
+/*
+UI Changes
+- Clear key after error
+- clear code after error 
+- fix state order
+*/
 #include <avr/io.h>
 
 #define MINLEN 5
@@ -627,9 +634,9 @@ void err(){
 	int8_t temp = PORTB;
 	for(int8_t i=0; i<3; i++){
 		PORTB = 0xFF;
-		delay(500);
+		delay(200);
 		PORTB = 0x00;
-		delay(500);
+		delay(200);
 	}
 	PORTB = temp;
 }
