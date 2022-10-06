@@ -56,6 +56,7 @@ class lock {
 		int8_t code[MAXLEN];
 		uint8_t code_length;
 		int8_t active;
+		int8_t head;
 	public:
 		lock() {code_length=0, active = 0;}	
 		void set_code(); 
@@ -66,6 +67,7 @@ class lock {
 		int8_t get_code_digit(int8_t num); 
 		void update_code(lock * new_code);
 		void write_code(); 
+		void set_head(int8_t num){head = num;}
 };
 
 void lock::set_active(int8_t num){
@@ -547,6 +549,20 @@ void lock::set_code(){
 	}
 }
 
+//*****************************************************************************************//
+//
+//
+//*****************************************************************************************//
+void lock::write_code(){
+	//starts at 0x18
+	//First pointers 
+	//admin=: 0x4-0x7
+	//code 1: 0x8-0xB
+	//code 2: 0xC-0xf
+	//code 3: 0x10-0x13
+	//code 4: 0x14-0x17
+}
+
 //*****************************************************************************************************************************************************************//
 // FUNCTIONS 
 //*****************************************************************************************************************************************************************//
@@ -638,6 +654,7 @@ void err(){
 		PORTB = 0x00;
 		delay(200);
 	}
+	temp &= ~0x0F; 
 	PORTB = temp;
 }
 
