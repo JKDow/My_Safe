@@ -181,6 +181,7 @@ class lock_box {
 		int8_t check_active();
 		void set_active(int8_t num);
 		void del_code();
+		void clear_attempts(){attempt=0;}
 };
 
 void lock_box::set_select(int8_t num){
@@ -444,6 +445,14 @@ void state_machine::admin_unlocked_state(){
 			set_state(userLocked);
 		}
 		else if(key == 2){
+			digi_safe.admin_code.del_code(0); 
+			digi_safe.admin_code.set_active(0); 
+			for(int8_t i=0; i<4; i++){
+				digi_safe.safe[i].del_code(0);
+				digi_safe.safe[i].set_active(0); 
+			}
+			digi_safe.clear_attempts(); 
+			set_state(initial); 
 			// reset system
 		}
 		else if(key == 3){
