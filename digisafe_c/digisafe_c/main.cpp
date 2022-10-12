@@ -37,11 +37,27 @@ UI Changes
 */
 #include <avr/io.h>
 
+#define format getKey
+//#define format simKey
+
 #define MINLEN 5
 
 #define MAXLEN 50
 
+#define LOCKTIME 10
+
 enum states {initial, userLocked, adminLocked, adminUnlocked, safeSelect, userUnlocked, editCode, lockout}; 
+	
+//*****************************************************************************************************************************************************************//
+// FUNCTIONS
+//*****************************************************************************************************************************************************************//
+void err();
+void delay(int ms);
+int8_t getKey();
+void releaseKey(int8_t key);
+int8_t simKey();
+unsigned char EEPROM_read(unsigned int uiAddress);
+void EEPROM_write(unsigned int uiAddress, unsigned char ucData);
 	
 //*****************************************************************************************************************************************************************//
 // CLASSES
@@ -56,7 +72,6 @@ class lock {
 		int8_t code[MAXLEN];
 		uint8_t code_length;
 		int8_t active;
-		int8_t head;
 	public:
 		lock() {code_length=0, active = 0;}	
 		void set_code(); 
@@ -65,9 +80,9 @@ class lock {
 		int8_t compare_code(lock * comp); 
 		int8_t get_code_len() {return code_length;}
 		int8_t get_code_digit(int8_t num); 
-		void update_code(lock * new_code);
-		void write_code(); 
-		void set_head(int8_t num){head = num;}
+		void update_code(lock * new_code, int8_t pos);
+		void del_code(int8_t pos); 
+		void read_code(int8_t pos); 
 };
 
 void lock::set_active(int8_t num){
@@ -106,13 +121,43 @@ int8_t lock::get_code_digit(int8_t num){
 	}
 }
 
-void lock::update_code(lock * new_code){
-	code_length = new_code->get_code_len();
-	for(uint8_t i=0; i< code_length; i++){
-		code[i] = new_code->get_code_digit(i);
+void lock::del_code(int8_t pos){
+	unsigned int point = (pos*4)+4;
+	unsigned char addr[2]; 
+	for(int8_t i=0; i<=code_length;i++){
+		EEPROM_write(point, 0); 
+		point = point+2;
+		addr[1] = EEPROM_read(point);
+		point++;
+		addr[0] = EEPROM_read(point);
+		point = addr[0];
+		point = point | (addr[1]<<8);
 	}
-	new_code->set_active(0); 
-	active = 1;
+}
+
+void lock::read_code(int8_t pos){
+	unsigned int point = (pos*4)+4; 
+	unsigned char test = EEPROM_read(point); 
+	if(test == 1){
+		active = 1; 
+		point++; 
+		test = EEPROM_read(point);
+		code_length = test; 
+		point++;
+		unsigned char addr[2];
+		for(int8_t i=0; i< code_length; i++){
+			addr[1] = EEPROM_read(point);
+			point++;
+			addr[0] = EEPROM_read(point);
+			point = addr[0];
+			point = point | (addr[1]<<8);
+			point++;
+			test = EEPROM_read(point); 
+			code[i] = test; 
+			point++; 
+		}
+		
+	}
 }
 
 //*****************************************************************************************//
@@ -122,8 +167,9 @@ void lock::update_code(lock * new_code){
 class lock_box {
 	private:
 		int8_t select; 
+		int8_t attempt; 
 	public:
-		lock_box(){select = 0; }
+		lock_box(){select = 0; attempt=0;}
 			
 		lock safe[4];
 		lock admin_code;
@@ -134,6 +180,7 @@ class lock_box {
 		void update_code(uint8_t code_sel); 
 		int8_t check_active();
 		void set_active(int8_t num);
+		void del_code();
 };
 
 void lock_box::set_select(int8_t num){
@@ -146,23 +193,29 @@ void lock_box::set_select(int8_t num){
 }
 
 int8_t lock_box::compare_code(uint8_t code_sel){
+	volatile int8_t val; 
 	if(code_sel == 0){
-		return safe[select].compare_code(&temp_code);
+		val = safe[select].compare_code(&temp_code);
 	}
 	else if(code_sel == 1){
-		return admin_code.compare_code(&temp_code); 
+		val = admin_code.compare_code(&temp_code);  
 	}
-	else {
-		while(1); 
+	if(val == 0){
+		attempt++;
+		if(attempt == 3){
+			attempt=0;
+			return 2;
+		}
 	}
+	return val; 
 }
 
 void lock_box::update_code(uint8_t code_sel){
 	if(code_sel == 0){
-		safe[select].update_code(&temp_code);
+		safe[select].update_code(&temp_code, select+1);
 	}
 	else if(code_sel == 1){
-		admin_code.update_code(&temp_code);
+		admin_code.update_code(&temp_code, 0);
 	}
 	else {
 		while(1);
@@ -175,6 +228,10 @@ int8_t lock_box::check_active(){
 
 void lock_box::set_active(int8_t num){
 	safe[select].set_active(num); 
+}
+
+void lock_box::del_code(){
+	safe[select].del_code(select+1); 
 }
 
 //*****************************************************************************************//
@@ -218,18 +275,6 @@ void state_machine::back_state(){
 	last_state = temp; 
 	PORTB = current_state << 4;
 }
-
-//*****************************************************************************************************************************************************************//
-// FUNCTIONS
-//*****************************************************************************************************************************************************************//
-void err(); 
-void delay(int ms);
-int8_t getKey();
-void releaseKey(int8_t key);
-int8_t simKey();
-unsigned char EEPROM_read(unsigned int uiAddress);
-void EEPROM_write(unsigned int uiAddress, unsigned char ucData);
-
 
 //*****************************************************************************************************************************************************************//
 // MAIN
@@ -296,8 +341,8 @@ void state_machine::initial_state(){
 	int8_t header[5] = {0x6A, 0x6F, 0x73, 0x68, 1}; //ASCII for j o s h, 1 checks for valid admin code 
 	int8_t read;
 	unsigned int i;
-	volatile int8_t valid = 1;
-	for(i=0; i<sizeof(header); i++){
+	volatile int8_t valid = 1; //valid flag
+	for(i=0; i<sizeof(header); i++){ //go through header
 		read = EEPROM_read(i);
 		if(read != header[i]){
 			valid =0;
@@ -308,6 +353,10 @@ void state_machine::initial_state(){
 	
 	if(valid){ //if the header was there
 		//load codes and data
+		digi_safe.admin_code.read_code(0); 
+		for(int8_t j=0; j<4; j++){
+			digi_safe.safe[j].read_code(j+1); 
+		}
 		set_state(userLocked); 
 	}
 	else { //if the header was not there
@@ -327,7 +376,7 @@ void state_machine::initial_state(){
 // Linked States: Admin Locked, safe Select
 //*****************************************************************************************//
 void state_machine::user_locked_state(){
-	int8_t key = getKey();
+	int8_t key = format(); //break
 	//int8_t key = simKey();
 	if(key != -1){
 		if(key == 10){ //if Astrix
@@ -350,12 +399,15 @@ void state_machine::user_locked_state(){
 // Linked states:, User locked, admin unlocked
 //*****************************************************************************************//
 void state_machine::admin_locked_state(){
-	digi_safe.temp_code.set_code(); 
+	digi_safe.temp_code.set_code(); //break
 	if (digi_safe.temp_code.get_active()==1){ //code finished
 		if(digi_safe.admin_code.get_active()){ //if admin code present
 			int8_t ret = digi_safe.compare_code(1); 
-			if(ret){
+			if(ret==1){
 				set_state(adminUnlocked); 
+			}
+			else if(ret == 2){
+				set_state(lockout);
 			}
 			else{
 				err(); 
@@ -380,7 +432,7 @@ void state_machine::admin_locked_state(){
 //
 //*****************************************************************************************//
 void state_machine::admin_unlocked_state(){
-	int8_t key = getKey();
+	int8_t key = format(); //break
 	//int8_t key = simKey();
 	if(key != -1){
 		if(key == 10){ // *
@@ -417,13 +469,16 @@ void state_machine::admin_unlocked_state(){
 // outputs: none
 //*****************************************************************************************//
 void state_machine::safe_select_state(){
-	digi_safe.temp_code.set_code();  
+	digi_safe.temp_code.set_code();  //break
 	if(digi_safe.temp_code.get_active() == 1){ //Code complete 
 		//check if safe is in use 
 		if(digi_safe.check_active()){ //is active 
 			int8_t ret = digi_safe.compare_code(0);
 			if(ret == 1){
 				set_state(userUnlocked);
+			}
+			else if(ret == 2){
+				set_state(lockout);
 			}
 			else{ //Code is wrong
 				err(); 
@@ -449,7 +504,7 @@ void state_machine::safe_select_state(){
 // they can go back, lock the safe, release the safe or edit the code 
 //*****************************************************************************************//
 void state_machine::user_unlocked_state(){
-	int8_t key = getKey();
+	int8_t key = format(); //break
 	//int8_t key = simKey();
 	if(key != -1){
 		if(key == 10){ // * so go back
@@ -459,6 +514,7 @@ void state_machine::user_unlocked_state(){
 			set_state(userLocked); 
 		}
 		else if(key == 2){//release safe
+			digi_safe.del_code(); 
 			digi_safe.set_active(0); 
 			set_state(userLocked); 
 		}
@@ -478,7 +534,7 @@ void state_machine::user_unlocked_state(){
 //
 //*****************************************************************************************//
 void state_machine::edit_code_state(){
-	digi_safe.temp_code.set_code(); 
+	digi_safe.temp_code.set_code();  //break
 	if(digi_safe.temp_code.get_active() == 1){ //Code complete 
 		if(last_state == userUnlocked){
 			digi_safe.update_code(0);
@@ -503,12 +559,74 @@ void state_machine::edit_code_state(){
 //
 //*****************************************************************************************//
 void state_machine::lockout_state(){
-	
+	for(int8_t i =0; i<LOCKTIME; i++){
+		err(); 
+	}
+	set_state(last_state); 
 }
 
 //*****************************************************************************************************************************************************************//
 // OTHER CLASS FUNCTIONS
 //*****************************************************************************************************************************************************************//
+
+//*****************************************************************************************//
+//
+//
+//
+//*****************************************************************************************//
+void lock::update_code(lock * new_code, int8_t pos){
+	unsigned int point = (pos*4)+4, search=24; //create pointer to write location according to header
+	EEPROM_write(point, 1);  //set code to valid in eeprom
+	point++;
+	code_length = new_code->get_code_len(); //update length
+	EEPROM_write(point, code_length);  //in EEPROM
+	point++;
+	int8_t find = 1; //variable will be used to control while loop for finding valid locations
+	volatile unsigned char test;
+	while(find){
+		test = EEPROM_read(search);
+		if(test == 0xCC){
+			search=search+4;
+		}
+		else{
+			find = 0;
+			EEPROM_write(point,(int8_t)((search>>8)&0xFF));
+			point++;
+			EEPROM_write(point,(int8_t)(search&0xFF));
+			point = search;
+			EEPROM_write(point,0xCC);
+			point++;
+			code[0] = new_code->get_code_digit(0);
+			EEPROM_write(point, code[0]);
+			point++;
+		}
+	}
+	search = search+4;
+	for(uint8_t i=1; i< code_length; i++){
+		code[i] = new_code->get_code_digit(i);
+		find = 1;
+		while(find){
+			test = EEPROM_read(search);
+			if(test == 0xCC){
+				search=search+4;
+			}
+			else{
+				find = 0;
+				EEPROM_write(point,(int8_t)((search>>8)&0xFF));
+				point++;
+				EEPROM_write(point,(int8_t)(search&0xFF));
+				point = search;
+				EEPROM_write(point,0xCC);
+				point++;
+				EEPROM_write(point, code[i]);
+				point++;
+			}
+		}
+		search = search+4;
+	}
+	new_code->set_active(0);
+	active = 1;
+}
 
 //*****************************************************************************************//
 // set code
@@ -519,7 +637,7 @@ void state_machine::lockout_state(){
 // Inputs: key from user 
 //*****************************************************************************************//
 void lock::set_code(){
-	int8_t key = getKey(); 
+	int8_t key = format(); 
 	//int8_t key = simKey();
 	if(key != -1){
 		if(key == 10){
@@ -549,20 +667,6 @@ void lock::set_code(){
 	}
 }
 
-//*****************************************************************************************//
-//
-//
-//*****************************************************************************************//
-void lock::write_code(){
-	//starts at 0x18
-	//First pointers 
-	//admin=: 0x4-0x7
-	//code 1: 0x8-0xB
-	//code 2: 0xC-0xf
-	//code 3: 0x10-0x13
-	//code 4: 0x14-0x17
-}
-
 //*****************************************************************************************************************************************************************//
 // FUNCTIONS 
 //*****************************************************************************************************************************************************************//
@@ -581,11 +685,12 @@ int8_t getKey(){	//reads key - same as part B
 		delay(10);
 		key = PINC;
 		if(key != (int8_t)keys[i][0]){
+			int8_t val = PORTB; 
+			val &= ~0x0F; 
+			PORTB = val; 
 			releaseKey(key); //waits for key release to ensure key is read once
 			for(int8_t j=1; j<5; j++){
 				if(key == (int8_t)keys[i][j]){
-					int8_t val = PORTB;
-					val &= ~0x0F; 	
 					int8_t n = values[i][j-1];
 					if(n!=10){
 						val |=  n;
@@ -694,3 +799,4 @@ unsigned char EEPROM_read(unsigned int uiAddress)
 	/* Return data from data register */
 	return EEDR;
 }
+
